@@ -1,0 +1,219 @@
+// ============================================================
+//  SCHÉMA PRISMA — Plateforme de vente & précommandes (scellé)
+//  Doc : https://pris.ly/d/prisma-schema
+// ============================================================
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ============================================================
+//  ENUMS
+// ============================================================
+
+/// Catégories de produits scellés vendus sur la boutique.
+enum ProductType {
+  DISPLAY
+  ETB
+  BOOSTER
+  COFFRET
+}
+
+/// Rôle d'un utilisateur. L'admin du dashboard a le rôle ADMIN.
+enum UserRole {
+  CUSTOMER
+  ADMIN
+}
+
+/// Cycle de vie d'une commande.
+enum OrderStatus {
+  PENDING /// Commande créée, paiement PAS encore confirmé (stock réservé, non décrémenté)
+  PAID /// Webhook Stripe "paiement réussi" reçu -> stock décrémenté définitivement
+  SHIPPED /// Expédiée (numéro de suivi saisi par l'admin)
+  CANCELLED /// Annulée (paiement échoué ou session expirée)
+  REFUNDED /// Remboursée
+}
+
+/// État d'une réservation de stock (protection anti-survente).
+enum ReservationStatus {
+  PENDING /// Stock bloqué temporairement pendant le tunnel de paiement
+  CONFIRMED /// Paiement réussi -> la réservation devient une vente ferme
+  RELEASED /// Libérée manuellement (annulation, panier abandonné)
+  EXPIRED /// Session Stripe expirée -> stock relibéré automatiquement
+}
+
+// ============================================================
+//  PRODUITS
+// ============================================================
+
+model Product {
+  id          String      @id @default(cuid())
+  name        String
+  slug        String      @unique /// URL SEO-friendly (ex: "display-evolving-skies")
+  sku         String      @unique /// Référence interne unique
+  type        ProductType
+  description String?
+
+  /// 💶 IMPORTANT : tout montant est stocké en CENTIMES (Int).
+  /// On n'utilise JAMAIS de Float pour de l'argent (erreurs d'arrondi).
+  priceCents Int
+
+  /// 📦 Stock PHYSIQUE réellement en main (unités possédées).
+  stock Int @default(0)
+
+  imageUrl String?
+
+  /// 🔮 Précommande : si true, le bouton affiche "Précommander"
+  /// et la fiche produit montre la date de sortie officielle.
+  isPreorder  Boolean   @default(false)
+  releaseDate DateTime?
+
+  /// Permet de masquer un produit du catalogue sans le supprimer.
+  isActive Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  orderItems   OrderItem[]
+  reservations StockReservation[]
+
+  @@index([type])
+  @@index([isActive])
+  @@index([isPreorder])
+}
+
+// ============================================================
+//  UTILISATEURS (compte optionnel, créé APRÈS la commande)
+// ============================================================
+
+model User {
+  id    String  @id @default(cuid())
+  email String  @unique
+  name  String?
+
+  /// null tant que le client (guest) n'a pas défini de mot de passe.
+  passwordHash String?
+
+  role UserRole @default(CUSTOMER)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  orders Order[]
+}
+
+// ============================================================
+//  COMMANDES
+// ============================================================
+
+model Order {
+  id          String @id @default(cuid())
+  orderNumber String @unique /// Référence lisible client (ex: CMD-2026-000123)
+
+  /// Guest checkout : l'email est TOUJOURS requis. Le compte est optionnel.
+  email  String
+  userId String?
+  user   User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  status OrderStatus @default(PENDING)
+
+  /// 💶 Montants en centimes.
+  subtotalCents Int
+  shippingCents Int    @default(0)
+  totalCents    Int
+  currency      String @default("eur")
+
+  /// 🔗 Références Stripe (pour réconcilier avec le webhook).
+  stripeSessionId       String? @unique
+  stripePaymentIntentId String? @unique
+
+  /// 🚚 Adresse de livraison figée au moment de la commande.
+  shippingName       String?
+  shippingLine1      String?
+  shippingLine2      String?
+  shippingCity       String?
+  shippingPostalCode String?
+  shippingCountry    String?
+  shippingPhone      String?
+
+  /// 📦 Suivi d'expédition (renseigné par l'admin).
+  carrier        String?
+  trackingNumber String?
+  shippedAt      DateTime?
+  paidAt         DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  items        OrderItem[]
+  reservations StockReservation[]
+
+  @@index([email])
+  @@index([status])
+  @@index([userId])
+}
+
+model OrderItem {
+  id        String  @id @default(cuid())
+  orderId   String
+  order     Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId String
+  /// Restrict : on interdit la suppression d'un produit déjà commandé
+  /// pour préserver l'intégrité de l'historique.
+  product   Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  /// 📸 SNAPSHOTS : on fige nom / SKU / prix unitaire au moment de l'achat.
+  /// Le prix du produit pourra évoluer ensuite (alignement MSRP/marché)
+  /// sans jamais altérer les commandes passées.
+  nameSnapshot   String
+  skuSnapshot    String
+  unitPriceCents Int
+  quantity       Int
+
+  @@index([orderId])
+  @@index([productId])
+}
+
+// ============================================================
+//  RÉSERVATIONS DE STOCK (cœur de la protection anti-survente)
+// ============================================================
+//
+//  Règle d'or : le stock physique (Product.stock) n'est JAMAIS
+//  décrémenté tant que Stripe n'a pas confirmé le paiement.
+//
+//  Pendant le tunnel de paiement, on crée une réservation PENDING
+//  qui "bloque" des unités sans toucher Product.stock.
+//
+//  Stock réellement vendable :
+//      disponible = Product.stock - Σ(quantity des réservations PENDING)
+//
+//  - Paiement réussi (webhook) : réservation -> CONFIRMED + Product.stock décrémenté.
+//  - Session expirée / annulée  : réservation -> EXPIRED/RELEASED, stock relibéré.
+// ============================================================
+
+model StockReservation {
+  id        String            @id @default(cuid())
+  productId String
+  product   Product           @relation(fields: [productId], references: [id], onDelete: Cascade)
+  quantity  Int
+  status    ReservationStatus @default(PENDING)
+
+  orderId         String?
+  order           Order?  @relation(fields: [orderId], references: [id], onDelete: SetNull)
+  stripeSessionId String?
+
+  /// Au-delà de cette date, une réservation PENDING est considérée
+  /// expirée et son stock est relibéré (aligné sur l'expiration Stripe).
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([productId, status])
+  @@index([status, expiresAt])
+  @@index([stripeSessionId])
+}

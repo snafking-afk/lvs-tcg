@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx --yes create-next-app@latest . --ts --tailwind --eslint --app --src-dir --import-alias \"@/*\" --turbopack --use-npm --yes)",
+      "Bash(npm install *)",
+      "Bash(npx prisma *)",
+      "WebSearch",
+      "WebFetch(domain:tcgplayer-cdn.tcgplayer.com)",
+      "Bash(cat next.config.ts)",
+      "Bash(node -e \"const p=require\\('./package.json'\\);console.log\\(JSON.stringify\\(p.scripts,null,2\\)\\)\")",
+      "Bash(node -e \"try{require.resolve\\('tsx'\\);console.log\\('tsx yes'\\)}catch{console.log\\('tsx no'\\)}\")",
+      "Bash(node -e \"const s=process.argv[1].normalize\\('NFD'\\).replace\\(/[̀-ͯ]/g,''\\).toLowerCase\\(\\).replace\\(/[^a-z0-9]+/g,'-'\\).replace\\(/^-+|-+\\\\$/g,''\\); console.log\\('slug =>', s\\);\" \"Coffret Dresseur d'élite \\(ETB\\) - Évolutions Prisme\")",
+      "Bash(npm run *)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:3000)",
+      "PowerShell($env:NODE_ENV=\"development\"; npx next typegen; if \\($?\\) { npx tsc --noEmit -p tsconfig.json })",
+      "PowerShell(Set-Location \"C:\\\\Users\\\\Melina-Rose\\\\Downloads\\\\mon-site-pokemon\"; npx tsc --noEmit; \"tsc exit: $LASTEXITCODE\")",
+      "PowerShell(Set-Location \"C:\\\\Users\\\\Melina-Rose\\\\Downloads\\\\mon-site-pokemon\"; npx next build; \"build exit: $LASTEXITCODE\")",
+      "PowerShell(try { $r = Invoke-WebRequest -Uri \"http://localhost:3000/\" -UseBasicParsing -TimeoutSec 60; \"HOME status: $\\($r.StatusCode\\)\"; if \\($r.Content -match 'Ajouter au panier|Pr.commander|catalogue'\\) { \"HOME: contenu catalogue détecté\" } } catch { \"HOME ERROR: $\\($_.Exception.Message\\)\" })",
+      "PowerShell(npm run *)",
+      "PowerShell(Set-Location \"C:\\\\Users\\\\Melina-Rose\\\\Downloads\\\\mon-site-pokemon\"; npx next build 2>&1 | Select-String -Pattern \"Compiled|error|Error|Route|/faq|/contact|/panier|/produit|warn\" ; \"build exit: $LASTEXITCODE\")"
+    ]
+  }
+}
